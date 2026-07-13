@@ -4,14 +4,21 @@ import json
 import zipfile
 import shutil
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 
+# Aktifkan Logging agar error terlihat jelas di Log GitHub Actions
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Thread pool untuk menangani proses blocking CLI otaripper
 executor = ThreadPoolExecutor(max_workers=4)
 
 def _run_cmd_blocking(cmd):
@@ -23,10 +30,13 @@ async def run_cmd(cmd):
     return await loop.run_in_executor(executor, _run_cmd_blocking, cmd)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Menerima perintah /start atau /dump dari user: {update.effective_user.id}")
     await update.message.reply_text("👋 Halo! Kirimkan URL link OTA (.zip / payload.bin) untuk memulai proses dump.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
+    logger.info(f"Menerima pesan teks: {url}")
+    
     if not url.startswith("http"):
         await update.message.reply_text("❌ Mohon kirimkan URL valid yang diawali dengan http atau https.")
         return
@@ -78,7 +88,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     stdout, stderr = await run_cmd(cmd)
 
-    # Parsing output otaripper untuk mencari Hash SHA-256
     hash_data = {}
     for line in stdout.splitlines():
         if "sha256" in line.lower() or ":" in line:
@@ -86,7 +95,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(parts) >= 2:
                 hash_data[parts[0]] = parts[-1]
 
-    # Simpan hash ke file JSON di dalam folder output
     json_path = os.path.join(output_dir, "partition_hashes.json")
     with open(json_path, "w") as f:
         json.dump(hash_data, f, indent=4)
@@ -116,7 +124,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ Gagal mengirim file ZIP. Kemungkinan besar file melebihi limit unggah 50MB dari Telegram Bot API.\n\nError: {str(e)}"
         )
 
-    # Pembersihan sisa berkas
     if os.path.exists(zip_filename):
         os.remove(zip_filename)
     if os.path.exists(output_dir):
@@ -124,21 +131,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not TOKEN:
-        print("Error: TELEGRAM_TOKEN tidak ditemukan!")
+        logger.error("Error: TELEGRAM_TOKEN tidak ditemukan di Environment Variables!")
         return
         
-    # Set global request timeout 10 menit agar tidak memicu `telegram.error.TimedOut`
-    request_config = HTTPXRequest(connect_timeout=600, read_timeout=600)
+    # Mengurangi timeout bawaan untuk polling awal agar koneksi lebih responsif
+    request_config = HTTPXRequest(connect_timeout=30, read_timeout=30)
     
     application = Application.builder().token(TOKEN).request(request_config).build()
     
+    # Daftarkan handler
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dump", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback))
     
-    print("Bot aktif dalam mode polling jangka panjang...")
-    application.run_polling()
+    logger.info("Bot sukses dijalankan. Mendengarkan pesan...")
+    
+    # Gunakan parameter drop_pending_updates agar pesan usang tidak menumpuk
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
