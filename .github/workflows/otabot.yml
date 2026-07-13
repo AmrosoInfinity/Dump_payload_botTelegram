@@ -2,9 +2,13 @@ name: OTA Ripper Telegram Bot
 
 on:
   schedule:
-    # Cadangan otomatis jika pemicu berantai terputus (jalan setiap 6 jam)
     - cron: '0 */6 * * *'
-  workflow_dispatch: # Dapat dipicu manual dari tab Actions GitHub
+  workflow_dispatch:
+
+# TAMBAHKAN BLOK PERMISSIONS INI
+permissions:
+  actions: write
+  contents: read
 
 jobs:
   run-bot:
@@ -26,7 +30,6 @@ jobs:
 
     - name: Download and Setup Otaripper
       run: |
-        # Mengunduh versi x86_64 agar kompatibel dengan runner ubuntu-latest
         wget https://github.com/syedinsaf/otaripper/releases/download/v3.3.0/otaripper-3.3.0-linux-x86_64.tar.gz
         tar -xvf otaripper-3.3.0-linux-x86_64.tar.gz
         chmod +x otaripper
@@ -36,8 +39,6 @@ jobs:
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       run: |
-        # Batasi proses bot selama 5 jam 30 menit (19800 detik)
-        # Ini agar bot mati secara bersih sebelum menyentuh limit keras 6 jam GitHub
         timeout 19800 python bot.py || echo "Sesi bot selesai secara aman."
 
     - name: Trigger Next Session (Looping)
