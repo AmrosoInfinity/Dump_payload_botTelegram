@@ -78,11 +78,13 @@ async def process_dump(callback_query: types.CallbackQuery):
             await callback_query.message.answer(f"Gagal membaca OTA: {e}")
             return
 
-        kb = InlineKeyboardMarkup(inline_keyboard=[])
+        buttons = []
         for p in partitions:
             safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', p)[:60]
-            kb.inline_keyboard.append([InlineKeyboardButton(text=p, callback_data=f"choose|{safe_name}")])
-        kb.inline_keyboard.append([InlineKeyboardButton(text="Ekstrak Sekarang", callback_data="extract")])
+            buttons.append([InlineKeyboardButton(text=p, callback_data=f"choose|{safe_name}")])
+        buttons.append([InlineKeyboardButton(text="Ekstrak Sekarang", callback_data="extract")])
+
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
         await callback_query.message.answer(
             "Pilih partisi dengan klik tombol. Setiap klik akan menambahkan nama partisi ke daftar pilihan "
