@@ -16,7 +16,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y python3 python3-pip unzip
-          pip3 install aiogram
+          pip3 install aiogram==3.*
 
       - name: Download otaripper
         run: |
