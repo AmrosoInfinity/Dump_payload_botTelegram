@@ -1,150 +1,61 @@
 import os
 import subprocess
 import json
-import zipfile
 import shutil
-import asyncio
-import logging
-import sys
-from concurrent.futures import ThreadPoolExecutor
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram.request import HTTPXRequest
-
-# Log langsung agar langsung tampil di GitHub Actions
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    stream=sys.stdout
-)
-logger = logging.getLogger(__name__)
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-executor = ThreadPoolExecutor(max_workers=4)
+bot = Bot(token=TOKEN)
+dp = Dispatcher(bot)
 
-def _run_cmd_blocking(cmd):
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    return result.stdout, result.stderr
+@dp.message_handler(commands=['dump'])
+async def cmd_dump(message: types.Message):
+    await message.reply("Kirim file OTA (.zip/payload.bin) atau URL OTA:")
 
-async def run_cmd(cmd):
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(executor, _run_cmd_blocking, cmd)
+@dp.message_handler(content_types=['document', 'text'])
+async def handle_ota(message: types.Message):
+    ota_input = None
+    if message.document:
+        file_path = f"downloads/{message.document.file_name}"
+        await message.document.download(destination_file=file_path)
+        ota_input = file_path
+    else:
+        ota_input = message.text.strip()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Menerima perintah dari user: {update.effective_user.id}")
-    await update.message.reply_text("👋 Halo! Kirimkan URL link OTA (.zip / payload.bin) untuk memulai proses dump.")
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("Dump Full", callback_data=f"full|{ota_input}"))
+    kb.add(InlineKeyboardButton("Dump Partition", callback_data=f"part|{ota_input}"))
+    await message.reply("Pilih mode ekstraksi:", reply_markup=kb)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
-    logger.info(f"Menerima URL: {url}")
-    
-    if not url.startswith("http"):
-        await update.message.reply_text("❌ Mohon kirimkan URL valid yang diawali dengan http atau https.")
-        return
-
-    status_msg = await update.message.reply_text("🔍 Sedang membaca daftar partisi dari remote OTA... (Mohon tunggu)")
-    stdout, stderr = await run_cmd(f"./otaripper -l {url}")
-    
-    if "partitions" not in stdout.lower() and not stdout:
-        await status_msg.edit_text(f"❌ Gagal membaca OTA. Pastikan URL valid.\nError: {stderr[:100]}")
-        return
-
-    context.user_data['ota_url'] = url
-    keyboard = [
-        [InlineKeyboardButton("📦 Dump Full", callback_data="dump_full")],
-        [InlineKeyboardButton("🧩 Dump Boot & Vendor Only", callback_data="dump_part")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await status_msg.edit_text("✅ OTA Terdeteksi!\n\nSilakan pilih metode ekstraksi:", reply_markup=reply_markup)
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    url = context.user_data.get('ota_url')
-    if not url:
-        await query.edit_message_text("❌ Sesi kedaluwarsa. Silakan kirim ulang URL OTA.")
-        return
-
-    choice = query.data
-    output_dir = "extracted_ota"
-    
-    await run_cmd("./otaripper clean")
-    if os.path.exists(output_dir):
-        shutil.rmtree(output_dir)
+@dp.callback_query_handler(lambda c: c.data.startswith("full") or c.data.startswith("part"))
+async def process_dump(callback_query: types.CallbackQuery):
+    mode, ota_input = callback_query.data.split("|", 1)
+    output_dir = "extracted"
     os.makedirs(output_dir, exist_ok=True)
 
-    await query.edit_message_text("⚡ Memulai ekstraksi OTA... Proses ini memakan waktu beberapa menit.")
-    cmd = f"./otaripper {url} -o {output_dir} --print-hash -n" if choice == "dump_full" else f"./otaripper {url} -p boot,init_boot,vendor_boot,system -o {output_dir} --print-hash -n"
-    stdout, stderr = await run_cmd(cmd)
+    if mode == "full":
+        cmd = ["./otaripper", ota_input, "-o", output_dir, "--print-hash", "--stats"]
+    else:
+        # contoh partisi default
+        cmd = ["./otaripper", ota_input, "-o", output_dir, "-p", "boot,vendor_boot", "--print-hash"]
 
-    hash_data = {}
-    for line in stdout.splitlines():
-        if "sha256" in line.lower() or ":" in line:
-            parts = line.split()
-            if len(parts) >= 2:
-                hash_data[parts[0]] = parts[-1]
+    subprocess.run(cmd, check=True)
 
-    with open(os.path.join(output_dir, "partition_hashes.json"), "w") as f:
-        json.dump(hash_data, f, indent=4)
+    # kumpulkan hash ke JSON
+    hashes = {}
+    for root, _, files in os.walk(output_dir):
+        for f in files:
+            if f.endswith(".img"):
+                path = os.path.join(root, f)
+                h = subprocess.check_output(["sha256sum", path]).decode().split()[0]
+                hashes[f] = h
 
-    zip_filename = "dump_result.zip"
-    await query.edit_message_text("🗜️ Ekstraksi selesai! Sedang mengompres berkas menjadi ZIP...")
-    
-    with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for root, dirs, files in os.walk(output_dir):
-            for file in files:
-                file_path = os.path.join(root, file)
-                zipf.write(file_path, os.path.relpath(file_path, output_dir))
+    with open("hashes.json", "w") as jf:
+        json.dump(hashes, jf, indent=2)
 
-    await query.edit_message_text("📤 Mengirimkan berkas dump ZIP ke Anda...")
-    try:
-        with open(zip_filename, 'rb') as document:
-            await query.message.reply_document(
-                document=document, filename=zip_filename, 
-                caption="✅ Dump Sukses menggunakan Otaripper!",
-                read_timeout=600, write_timeout=600
-            )
-    except Exception as e:
-        await query.message.reply_text(f"❌ Gagal mengirim file ZIP.\nError: {str(e)}")
+    shutil.make_archive("result", "zip", output_dir)
+    shutil.move("result.zip", "result_with_hash.zip")
 
-    if os.path.exists(zip_filename): os.remove(zip_filename)
-    if os.path.exists(output_dir): shutil.rmtree(output_dir)
-
-# Fungsi utama asinkron untuk memaksa bot standby
-async def main_async():
-    if not TOKEN:
-        logger.error("STANDBY ERROR: TELEGRAM_TOKEN kosong!")
-        return
-        
-    request_config = HTTPXRequest(connect_timeout=30, read_timeout=30)
-    application = Application.builder().token(TOKEN).request(request_config).build()
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("dump", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(handle_callback))
-    
-    # Inisialisasi dan jalankan polling secara manual agar tidak menutup otomatis
-    await application.initialize()
-    await application.updater.start_polling(drop_pending_updates=True)
-    await application.start()
-    
-    logger.info("🔥 BOT AKTIF & STANDBY MENUNGGU PESAN DI GITHUB ACTIONS 🔥")
-    
-    # Paksa script menahan diri/diam di tempat selama 5 Jam 30 Menit (19800 detik)
-    try:
-        await asyncio.sleep(19800)
-    except asyncio.CancelledError:
-        pass
-        
-    logger.info("Batas waktu sesi tercapai. Mematikan sesi untuk reload runner baru...")
-    await application.updater.stop()
-    await application.stop()
-    await application.shutdown()
-
-def main():
-    asyncio.run(main_async())
-
-if __name__ == '__main__':
-    main()
+    await bot.send_document(callback_query.from_user.id, open("result_with_hash.zip", "rb"))
