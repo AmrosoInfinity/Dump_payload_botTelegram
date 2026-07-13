@@ -5,20 +5,21 @@ import zipfile
 import shutil
 import asyncio
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 
-# Aktifkan Logging agar error terlihat jelas di Log GitHub Actions
+# Log langsung diarahkan ke stdout agar terlihat di GitHub Actions
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-
 executor = ThreadPoolExecutor(max_workers=4)
 
 def _run_cmd_blocking(cmd):
@@ -35,7 +36,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
-    logger.info(f"Menerima pesan teks: {url}")
+    logger.info(f"Menerima URL dari user: {url}")
     
     if not url.startswith("http"):
         await update.message.reply_text("❌ Mohon kirimkan URL valid yang diawali dengan http atau https.")
@@ -120,34 +121,41 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 write_timeout=600
             )
     except Exception as e:
-        await query.message.reply_text(
-            f"❌ Gagal mengirim file ZIP. Kemungkinan besar file melebihi limit unggah 50MB dari Telegram Bot API.\n\nError: {str(e)}"
-        )
+        await query.message.reply_text(f"❌ Gagal mengirim file ZIP.\nError: {str(e)}")
 
     if os.path.exists(zip_filename):
         os.remove(zip_filename)
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
 
+# Fungsi untuk mematikan bot otomatis setelah 5,5 jam agar memicu loop workflow baru
+async def auto_shutdown(application: Application):
+    runtime_seconds = 19800  # 5 Jam 30 Menit
+    logger.info(f"Timer auto-shutdown aktif. Bot akan berhenti otomatis dalam {runtime_seconds} detik.")
+    await asyncio.sleep(runtime_seconds)
+    logger.info("Batas waktu sesi tercapai. Menghentikan bot secara aman untuk memicu runner baru...")
+    await application.stop()
+    await application.shutdown()
+
 def main():
     if not TOKEN:
-        logger.error("Error: TELEGRAM_TOKEN tidak ditemukan di Environment Variables!")
+        logger.error("STANDBY ERROR: TELEGRAM_TOKEN kosong di environment variable!")
         return
         
-    # Mengurangi timeout bawaan untuk polling awal agar koneksi lebih responsif
     request_config = HTTPXRequest(connect_timeout=30, read_timeout=30)
-    
     application = Application.builder().token(TOKEN).request(request_config).build()
     
-    # Daftarkan handler
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dump", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback))
     
-    logger.info("Bot sukses dijalankan. Mendengarkan pesan...")
+    logger.info("Bot Berhasil Diinisialisasi. Memulai polling jaringan...")
     
-    # Gunakan parameter drop_pending_updates agar pesan usang tidak menumpuk
+    # Daftarkan tugas pemutus otomatis ke dalam event loop utama bot
+    loop = asyncio.get_event_loop()
+    loop.create_task(auto_shutdown(application))
+    
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
