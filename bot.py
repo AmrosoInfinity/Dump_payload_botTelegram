@@ -1,4 +1,4 @@
-import os, asyncio, subprocess, json, shutil, logging
+import os, asyncio, subprocess, json, shutil, logging, re
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import Command
@@ -12,6 +12,7 @@ dp = Dispatcher()
 # Simpan input OTA & pilihan partisi per user
 pending_inputs = {}
 selected_partitions = {}
+partition_maps = {}
 
 @dp.message(Command("dump"))
 async def cmd_dump(message: types.Message):
@@ -36,8 +37,10 @@ async def handle_ota(message: types.Message):
             return
 
     # Simpan input OTA & reset pilihan partisi
-    pending_inputs[message.from_user.id] = ota_input
-    selected_partitions[message.from_user.id] = []
+    user_id = message.from_user.id
+    pending_inputs[user_id] = ota_input
+    selected_partitions[user_id] = []
+    partition_maps[user_id] = {}
 
     # List partisi
     try:
@@ -52,7 +55,9 @@ async def handle_ota(message: types.Message):
         [InlineKeyboardButton(text="Dump Full", callback_data="full")]
     ])
     for p in partitions:
-        kb.inline_keyboard.append([InlineKeyboardButton(text=p, callback_data=f"part|{p}")])
+        safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', p)
+        partition_maps[user_id][safe_name] = p
+        kb.inline_keyboard.append([InlineKeyboardButton(text=p, callback_data=f"part|{safe_name}")])
     kb.inline_keyboard.append([InlineKeyboardButton(text="Ekstrak Sekarang", callback_data="extract")])
 
     await message.answer(
@@ -76,7 +81,8 @@ async def process_dump(callback_query: types.CallbackQuery):
         cmd = ["./otaripper", ota_input, "-o", output_dir, "--print-hash", "--stats"]
         subprocess.run(cmd, check=True)
     elif callback_query.data.startswith("part|"):
-        part = callback_query.data.split("|", 1)[1]
+        safe_name = callback_query.data.split("|", 1)[1]
+        part = partition_maps[user_id].get(safe_name, safe_name)
         if part not in selected_partitions[user_id]:
             selected_partitions[user_id].append(part)
         await callback_query.answer(f"Partisi {part} ditambahkan ✅")
