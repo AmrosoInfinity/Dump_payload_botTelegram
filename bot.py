@@ -19,19 +19,29 @@ dp = Dispatcher()
 async def cmd_dump(message: types.Message):
     await message.answer("Silakan kirim file OTA (.zip/payload.bin) atau URL OTA:")
 
-# Step 2: User kirim file atau URL
+# Step 2: User kirim file atau URL OTA
 @dp.message()
 async def handle_ota(message: types.Message):
     ota_input = None
+
+    # Hanya terima file .zip/.bin atau URL http(s)
     if message.document:
+        if not (message.document.file_name.endswith(".zip") or message.document.file_name.endswith(".bin")):
+            await message.answer("File tidak valid. Kirim OTA .zip atau payload.bin.")
+            return
         file_path = f"downloads/{message.document.file_name}"
         os.makedirs("downloads", exist_ok=True)
         await message.document.download(destination_file=file_path)
         ota_input = file_path
     else:
-        ota_input = message.text.strip()
+        text = message.text.strip()
+        if text.startswith("http://") or text.startswith("https://"):
+            ota_input = text
+        else:
+            # Abaikan input lain (misalnya /start)
+            return
 
-    # Jalankan otaripper -l untuk list partisi
+    # List partisi dengan otaripper -l
     try:
         result = subprocess.check_output(["./otaripper", "-l", ota_input], text=True)
         partitions = [p.strip() for p in result.splitlines() if p.strip()]
@@ -39,7 +49,6 @@ async def handle_ota(message: types.Message):
         await message.answer(f"Gagal membaca OTA: {e}")
         return
 
-    # Buat tombol pilihan
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Dump Full", callback_data=f"full|{ota_input}")],
         [InlineKeyboardButton(text="Dump Partition", callback_data=f"part|{ota_input}")]
@@ -82,6 +91,7 @@ async def process_dump(callback_query: types.CallbackQuery):
     await bot.send_document(callback_query.from_user.id, open("result_with_hash.zip", "rb"))
 
 async def main():
+    logging.info("Bot is running...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
