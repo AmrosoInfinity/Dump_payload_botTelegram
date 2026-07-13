@@ -24,7 +24,6 @@ async def cmd_dump(message: types.Message):
 async def handle_ota(message: types.Message):
     ota_input = None
 
-    # Hanya terima file .zip/.bin atau URL http(s)
     if message.document:
         if not (message.document.file_name.endswith(".zip") or message.document.file_name.endswith(".bin")):
             await message.answer("File tidak valid. Kirim OTA .zip atau payload.bin.")
@@ -41,7 +40,7 @@ async def handle_ota(message: types.Message):
             # Abaikan input lain (misalnya /start)
             return
 
-    # List partisi dengan otaripper -l
+    # Jalankan otaripper -l untuk list partisi
     try:
         result = subprocess.check_output(["./otaripper", "-l", ota_input], text=True)
         partitions = [p.strip() for p in result.splitlines() if p.strip()]
