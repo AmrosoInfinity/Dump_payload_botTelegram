@@ -1,4 +1,4 @@
-import os, asyncio, subprocess, json, shutil, logging, re
+import os, asyncio, subprocess, json, shutil, logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import Command
@@ -9,47 +9,35 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot = Bot(token=TOKEN, request_timeout=60)
 dp = Dispatcher()
 
+# Simpan input OTA sementara per user
 pending_inputs = {}
-selected_partitions = {}
-partition_maps = {}
 
 @dp.message(Command("dump"))
 async def cmd_dump(message: types.Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Upload File OTA", callback_data="input_file")],
-        [InlineKeyboardButton(text="Masukkan URL OTA", callback_data="input_url")]
-    ])
-    await message.answer("Pilih cara input OTA:", reply_markup=kb)
+    await message.answer("Silakan kirim file OTA (.zip/payload.bin) atau URL OTA:")
 
-@dp.callback_query()
-async def process_input_choice(callback_query: types.CallbackQuery):
-    if callback_query.data == "input_file":
-        await callback_query.message.answer("Silakan kirim file OTA (.zip/payload.bin).")
-    elif callback_query.data == "input_url":
-        await callback_query.message.answer("Silakan kirim URL OTA (http/https).")
+@dp.message()
+async def handle_ota(message: types.Message):
+    ota_input = None
+    if message.document:
+        if not (message.document.file_name.endswith(".zip") or message.document.file_name.endswith(".bin")):
+            await message.answer("File tidak valid. Kirim OTA .zip atau payload.bin.")
+            return
+        file_path = f"downloads/{message.document.file_name}"
+        os.makedirs("downloads", exist_ok=True)
+        await message.document.download(destination_file=file_path)
+        ota_input = file_path
     else:
-        await process_dump(callback_query)  # teruskan ke handler dump
+        text = message.text.strip()
+        if text.startswith("http://") or text.startswith("https://"):
+            ota_input = text
+        else:
+            return
 
-@dp.message(lambda m: m.document)
-async def handle_file(message: types.Message):
-    if not (message.document.file_name.endswith(".zip") or message.document.file_name.endswith(".bin")):
-        await message.answer("File tidak valid. Kirim OTA .zip atau payload.bin.")
-        return
-    file_path = f"downloads/{message.document.file_name}"
-    os.makedirs("downloads", exist_ok=True)
-    await message.document.download(destination_file=file_path)
-    await prepare_partitions(message.from_user.id, file_path, message)
+    # Simpan input OTA untuk user ini
+    pending_inputs[message.from_user.id] = ota_input
 
-@dp.message(lambda m: m.text and (m.text.startswith("http://") or m.text.startswith("https://")))
-async def handle_url(message: types.Message):
-    url = message.text.strip()
-    await prepare_partitions(message.from_user.id, url, message)
-
-async def prepare_partitions(user_id, ota_input, message):
-    pending_inputs[user_id] = ota_input
-    selected_partitions[user_id] = []
-    partition_maps[user_id] = {}
-
+    # List partisi
     try:
         result = subprocess.check_output(["./otaripper", "-l", ota_input], text=True)
         partitions = [p.strip() for p in result.splitlines() if p.strip()]
@@ -58,23 +46,18 @@ async def prepare_partitions(user_id, ota_input, message):
         return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Dump Full", callback_data="full")]
+        [InlineKeyboardButton(text="Dump Full", callback_data="full")],
+        [InlineKeyboardButton(text="Dump Partition", callback_data="part")]
     ])
-    for p in partitions:
-        safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', p)[:60]
-        partition_maps[user_id][safe_name] = p
-        kb.inline_keyboard.append([InlineKeyboardButton(text=p, callback_data=f"part|{safe_name}")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="Ekstrak Sekarang", callback_data="extract")])
-
     await message.answer(
-        "Input OTA diterima ✅\n\nKlik partisi untuk memilih (bisa lebih dari satu), "
-        "atau pilih Dump Full untuk semua partisi. Setelah selesai, tekan Ekstrak Sekarang.",
+        "Input OTA diterima ✅\n\nDaftar partisi:\n" + "\n".join(partitions) + "\n\nPilih mode ekstraksi:",
         reply_markup=kb
     )
 
+@dp.callback_query()
 async def process_dump(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    ota_input = pending_inputs.get(user_id)
+    mode = callback_query.data
+    ota_input = pending_inputs.get(callback_query.from_user.id)
     if not ota_input:
         await callback_query.message.answer("Tidak ada input OTA tersimpan. Kirim ulang dengan /dump.")
         return
@@ -82,26 +65,14 @@ async def process_dump(callback_query: types.CallbackQuery):
     output_dir = "extracted"
     os.makedirs(output_dir, exist_ok=True)
 
-    if callback_query.data == "full":
+    if mode == "full":
         cmd = ["./otaripper", ota_input, "-o", output_dir, "--print-hash", "--stats"]
-        subprocess.run(cmd, check=True)
-    elif callback_query.data.startswith("part|"):
-        safe_name = callback_query.data.split("|", 1)[1]
-        part = partition_maps[user_id].get(safe_name, safe_name)
-        if part not in selected_partitions[user_id]:
-            selected_partitions[user_id].append(part)
-        await callback_query.answer(f"Partisi {part} ditambahkan ✅")
-        return
-    elif callback_query.data == "extract":
-        parts = ",".join(selected_partitions[user_id])
-        if not parts:
-            await callback_query.message.answer("Belum ada partisi dipilih. Klik partisi dulu.")
-            return
-        cmd = ["./otaripper", ota_input, "-o", output_dir, "-p", parts, "--print-hash"]
-        subprocess.run(cmd, check=True)
     else:
-        return
+        cmd = ["./otaripper", ota_input, "-o", output_dir, "-p", "boot,vendor_boot", "--print-hash"]
 
+    subprocess.run(cmd, check=True)
+
+    # Buat JSON hash
     hashes = {}
     for root, _, files in os.walk(output_dir):
         for f in files:
@@ -118,10 +89,11 @@ async def process_dump(callback_query: types.CallbackQuery):
 
     logging.info("Ekstraksi selesai, mengirim hasil ke user...")
     zip_file = FSInputFile("result_with_hash.zip")
-    await bot.send_document(user_id, zip_file)
+    await bot.send_document(callback_query.from_user.id, zip_file)
 
+    # Kirim juga file hashes.json terpisah
     json_file = FSInputFile("hashes.json")
-    await bot.send_document(user_id, json_file)
+    await bot.send_document(callback_query.from_user.id, json_file)
 
 async def main():
     logging.info("Bot is running...")
