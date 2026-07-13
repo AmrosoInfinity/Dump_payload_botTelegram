@@ -11,7 +11,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 
-# Log langsung diarahkan ke stdout agar terlihat di GitHub Actions
+# Log langsung agar langsung tampil di GitHub Actions
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
@@ -31,19 +31,18 @@ async def run_cmd(cmd):
     return await loop.run_in_executor(executor, _run_cmd_blocking, cmd)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Menerima perintah /start atau /dump dari user: {update.effective_user.id}")
+    logger.info(f"Menerima perintah dari user: {update.effective_user.id}")
     await update.message.reply_text("👋 Halo! Kirimkan URL link OTA (.zip / payload.bin) untuk memulai proses dump.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
-    logger.info(f"Menerima URL dari user: {url}")
+    logger.info(f"Menerima URL: {url}")
     
     if not url.startswith("http"):
         await update.message.reply_text("❌ Mohon kirimkan URL valid yang diawali dengan http atau https.")
         return
 
     status_msg = await update.message.reply_text("🔍 Sedang membaca daftar partisi dari remote OTA... (Mohon tunggu)")
-    
     stdout, stderr = await run_cmd(f"./otaripper -l {url}")
     
     if "partitions" not in stdout.lower() and not stdout:
@@ -51,17 +50,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data['ota_url'] = url
-
     keyboard = [
         [InlineKeyboardButton("📦 Dump Full", callback_data="dump_full")],
         [InlineKeyboardButton("🧩 Dump Boot & Vendor Only", callback_data="dump_part")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await status_msg.edit_text(
-        "✅ OTA Terdeteksi!\n\nSilakan pilih metode ekstraksi:",
-        reply_markup=reply_markup
-    )
+    await status_msg.edit_text("✅ OTA Terdeteksi!\n\nSilakan pilih metode ekstraksi:", reply_markup=reply_markup)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -81,12 +75,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.makedirs(output_dir, exist_ok=True)
 
     await query.edit_message_text("⚡ Memulai ekstraksi OTA... Proses ini memakan waktu beberapa menit.")
-
-    if choice == "dump_full":
-        cmd = f"./otaripper {url} -o {output_dir} --print-hash -n"
-    else:
-        cmd = f"./otaripper {url} -p boot,init_boot,vendor_boot,system -o {output_dir} --print-hash -n"
-
+    cmd = f"./otaripper {url} -o {output_dir} --print-hash -n" if choice == "dump_full" else f"./otaripper {url} -p boot,init_boot,vendor_boot,system -o {output_dir} --print-hash -n"
     stdout, stderr = await run_cmd(cmd)
 
     hash_data = {}
@@ -96,8 +85,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(parts) >= 2:
                 hash_data[parts[0]] = parts[-1]
 
-    json_path = os.path.join(output_dir, "partition_hashes.json")
-    with open(json_path, "w") as f:
+    with open(os.path.join(output_dir, "partition_hashes.json"), "w") as f:
         json.dump(hash_data, f, indent=4)
 
     zip_filename = "dump_result.zip"
@@ -110,36 +98,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 zipf.write(file_path, os.path.relpath(file_path, output_dir))
 
     await query.edit_message_text("📤 Mengirimkan berkas dump ZIP ke Anda...")
-    
     try:
         with open(zip_filename, 'rb') as document:
             await query.message.reply_document(
-                document=document, 
-                filename=zip_filename, 
+                document=document, filename=zip_filename, 
                 caption="✅ Dump Sukses menggunakan Otaripper!",
-                read_timeout=600,
-                write_timeout=600
+                read_timeout=600, write_timeout=600
             )
     except Exception as e:
         await query.message.reply_text(f"❌ Gagal mengirim file ZIP.\nError: {str(e)}")
 
-    if os.path.exists(zip_filename):
-        os.remove(zip_filename)
-    if os.path.exists(output_dir):
-        shutil.rmtree(output_dir)
+    if os.path.exists(zip_filename): os.remove(zip_filename)
+    if os.path.exists(output_dir): shutil.rmtree(output_dir)
 
-# Fungsi untuk mematikan bot otomatis setelah 5,5 jam agar memicu loop workflow baru
-async def auto_shutdown(application: Application):
-    runtime_seconds = 19800  # 5 Jam 30 Menit
-    logger.info(f"Timer auto-shutdown aktif. Bot akan berhenti otomatis dalam {runtime_seconds} detik.")
-    await asyncio.sleep(runtime_seconds)
-    logger.info("Batas waktu sesi tercapai. Menghentikan bot secara aman untuk memicu runner baru...")
-    await application.stop()
-    await application.shutdown()
-
-def main():
+# Fungsi utama asinkron untuk memaksa bot standby
+async def main_async():
     if not TOKEN:
-        logger.error("STANDBY ERROR: TELEGRAM_TOKEN kosong di environment variable!")
+        logger.error("STANDBY ERROR: TELEGRAM_TOKEN kosong!")
         return
         
     request_config = HTTPXRequest(connect_timeout=30, read_timeout=30)
@@ -150,13 +125,26 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback))
     
-    logger.info("Bot Berhasil Diinisialisasi. Memulai polling jaringan...")
+    # Inisialisasi dan jalankan polling secara manual agar tidak menutup otomatis
+    await application.initialize()
+    await application.updater.start_polling(drop_pending_updates=True)
+    await application.start()
     
-    # Daftarkan tugas pemutus otomatis ke dalam event loop utama bot
-    loop = asyncio.get_event_loop()
-    loop.create_task(auto_shutdown(application))
+    logger.info("🔥 BOT AKTIF & STANDBY MENUNGGU PESAN DI GITHUB ACTIONS 🔥")
     
-    application.run_polling(drop_pending_updates=True)
+    # Paksa script menahan diri/diam di tempat selama 5 Jam 30 Menit (19800 detik)
+    try:
+        await asyncio.sleep(19800)
+    except asyncio.CancelledError:
+        pass
+        
+    logger.info("Batas waktu sesi tercapai. Mematikan sesi untuk reload runner baru...")
+    await application.updater.stop()
+    await application.stop()
+    await application.shutdown()
+
+def main():
+    asyncio.run(main_async())
 
 if __name__ == '__main__':
     main()
