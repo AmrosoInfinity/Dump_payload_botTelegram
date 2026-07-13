@@ -1,31 +1,42 @@
-name: OTA Dump Bot
+name: Telegram OTA Ripper Bot
 
 on:
   schedule:
-    - cron: "0 */6 * * *"   # setiap 6 jam
-  workflow_dispatch:
+    # Menjalankan workflow setiap 5 jam untuk mereset batasan 6-jam dari GitHub Action.
+    - cron: '0 */5 * * *'
+  workflow_dispatch: # Mengizinkan untuk dijalankan manual
+
+concurrency:
+  group: bot-runner
+  cancel-in-progress: true # Membatalkan instance bot sebelumnya jika cron baru berjalan
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 355 # Menghentikan bot tepat sebelum batas maksimal 360 menit GitHub
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3 python3-pip unzip
-          pip3 install aiogram==3.*
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-      - name: Download otaripper
+      - name: Install Dependencies
         run: |
-          wget https://github.com/syedinsaf/otaripper/releases/download/v3.3.0/otaripper-3.3.0-linux-x86_64.tar.gz -O otaripper.tar.gz
-          tar -xvf otaripper.tar.gz
+          pip install -r requirements.txt
+
+      - name: Download & Setup otaripper
+        run: |
+          # Mengunduh versi Linux agar bisa berjalan di container Ubuntu GitHub Actions
+          wget https://github.com/syedinsaf/otaripper/releases/download/v3.3.0/otaripper-3.3.0-linux-x86_64.tar.gz
+          tar -xvf otaripper-3.3.0-linux-x86_64.tar.gz
           chmod +x otaripper
 
-      - name: Run bot
+      - name: Run Bot
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
-          python3 bot.py
+          python bot.py
