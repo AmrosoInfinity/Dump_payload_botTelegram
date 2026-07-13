@@ -5,15 +5,18 @@ import json
 import shutil
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-@dp.message(commands=["dump"])
+# Handler untuk command /dump
+@dp.message(Command("dump"))
 async def cmd_dump(message: types.Message):
     await message.answer("Kirim file OTA (.zip/payload.bin) atau URL OTA:")
 
+# Handler untuk semua pesan (file atau teks)
 @dp.message()
 async def handle_ota(message: types.Message):
     ota_input = None
@@ -30,6 +33,7 @@ async def handle_ota(message: types.Message):
     kb.add(InlineKeyboardButton("Dump Partition", callback_data=f"part|{ota_input}"))
     await message.answer("Pilih mode ekstraksi:", reply_markup=kb)
 
+# Handler untuk tombol inline
 @dp.callback_query()
 async def process_dump(callback_query: types.CallbackQuery):
     mode, ota_input = callback_query.data.split("|", 1)
@@ -39,7 +43,6 @@ async def process_dump(callback_query: types.CallbackQuery):
     if mode == "full":
         cmd = ["./otaripper", ota_input, "-o", output_dir, "--print-hash", "--stats"]
     else:
-        # contoh partisi default
         cmd = ["./otaripper", ota_input, "-o", output_dir, "-p", "boot,vendor_boot", "--print-hash"]
 
     subprocess.run(cmd, check=True)
