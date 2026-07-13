@@ -7,18 +7,17 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.request import HTTPXRequest
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Inisialisasi executor untuk menjalankan perintah blocking di background
-executor = ThreadPoolExecutor(max_workers=3)
+# Thread pool untuk menangani proses blocking CLI otaripper
+executor = ThreadPoolExecutor(max_workers=4)
 
-# Helper blocking
 def _run_cmd_blocking(cmd):
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     return result.stdout, result.stderr
 
-# Helper asinkron agar tidak memblokir bot
 async def run_cmd(cmd):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(executor, _run_cmd_blocking, cmd)
@@ -32,9 +31,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Mohon kirimkan URL valid yang diawali dengan http atau https.")
         return
 
-    status_msg = await update.message.reply_text("🔍 Sedang membaca daftar partisi dari remote OTA... (Proses ini butuh waktu)")
+    status_msg = await update.message.reply_text("🔍 Sedang membaca daftar partisi dari remote OTA... (Mohon tunggu)")
     
-    # Menjalankan otaripper dengan aman di background thread
     stdout, stderr = await run_cmd(f"./otaripper -l {url}")
     
     if "partitions" not in stdout.lower() and not stdout:
@@ -50,7 +48,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await status_msg.edit_text(
-        f"✅ OTA Terdeteksi!\n\n Silakan pilih metode ekstraksi:",
+        "✅ OTA Terdeteksi!\n\nSilakan pilih metode ekstraksi:",
         reply_markup=reply_markup
     )
 
@@ -71,16 +69,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         shutil.rmtree(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    await query.edit_message_text("⚡ Memulai ekstraksi OTA... Proses ini memakan waktu tergantung ukuran file.")
+    await query.edit_message_text("⚡ Memulai ekstraksi OTA... Proses ini memakan waktu beberapa menit.")
 
     if choice == "dump_full":
         cmd = f"./otaripper {url} -o {output_dir} --print-hash -n"
     else:
         cmd = f"./otaripper {url} -p boot,init_boot,vendor_boot,system -o {output_dir} --print-hash -n"
 
-    # Menjalankan ekstraksi berat di background thread
     stdout, stderr = await run_cmd(cmd)
 
+    # Parsing output otaripper untuk mencari Hash SHA-256
     hash_data = {}
     for line in stdout.splitlines():
         if "sha256" in line.lower() or ":" in line:
@@ -88,6 +86,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(parts) >= 2:
                 hash_data[parts[0]] = parts[-1]
 
+    # Simpan hash ke file JSON di dalam folder output
     json_path = os.path.join(output_dir, "partition_hashes.json")
     with open(json_path, "w") as f:
         json.dump(hash_data, f, indent=4)
@@ -109,13 +108,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 document=document, 
                 filename=zip_filename, 
                 caption="✅ Dump Sukses menggunakan Otaripper!",
-                read_timeout=300,  # Berikan waktu lebih longgar untuk unggah file besar
-                write_timeout=300
+                read_timeout=600,
+                write_timeout=600
             )
     except Exception as e:
-        await query.message.reply_text(f"❌ Gagal mengirim file ZIP. Kemungkinan file terlalu besar (>50MB Limit Telegram).\nError: {str(e)}")
+        await query.message.reply_text(
+            f"❌ Gagal mengirim file ZIP. Kemungkinan besar file melebihi limit unggah 50MB dari Telegram Bot API.\n\nError: {str(e)}"
+        )
 
-    # Cleanup berkas
+    # Pembersihan sisa berkas
     if os.path.exists(zip_filename):
         os.remove(zip_filename)
     if os.path.exists(output_dir):
@@ -123,17 +124,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not TOKEN:
-        print("Error: TELEGRAM_TOKEN tidak ditemukan di Environment Variables!")
+        print("Error: TELEGRAM_TOKEN tidak ditemukan!")
         return
         
-    application = Application.builder().token(TOKEN).build()
+    # Set global request timeout 10 menit agar tidak memicu `telegram.error.TimedOut`
+    request_config = HTTPXRequest(connect_timeout=600, read_timeout=600)
+    
+    application = Application.builder().token(TOKEN).request(request_config).build()
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dump", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback))
     
-    print("Bot is running...")
+    print("Bot aktif dalam mode polling jangka panjang...")
     application.run_polling()
 
 if __name__ == '__main__':
