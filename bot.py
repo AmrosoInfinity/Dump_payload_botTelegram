@@ -1,4 +1,4 @@
-import os, asyncio, subprocess, json, shutil, logging
+import os, asyncio, subprocess, json, shutil, logging, re
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import Command
@@ -35,7 +35,8 @@ async def handle_ota(message: types.Message):
             return
 
     # Simpan input OTA untuk user ini
-    pending_inputs[message.from_user.id] = ota_input
+    user_id = message.from_user.id
+    pending_inputs[user_id] = ota_input
 
     # List partisi
     try:
@@ -45,19 +46,22 @@ async def handle_ota(message: types.Message):
         await message.answer(f"Gagal membaca OTA: {e}")
         return
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Dump Full", callback_data="full")],
-        [InlineKeyboardButton(text="Dump Partition", callback_data="part")]
-    ])
+    # Buat tombol: Dump Full + semua partisi
+    buttons = [[InlineKeyboardButton(text="Dump Full", callback_data="full")]]
+    for p in partitions:
+        safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', p)[:60]
+        buttons.append([InlineKeyboardButton(text=p, callback_data=f"part|{safe_name}")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await message.answer(
-        "Input OTA diterima ✅\n\nDaftar partisi:\n" + "\n".join(partitions) + "\n\nPilih mode ekstraksi:",
+        "Input OTA diterima ✅\n\nPilih partisi yang ingin diekstrak atau Dump Full:",
         reply_markup=kb
     )
 
 @dp.callback_query()
 async def process_dump(callback_query: types.CallbackQuery):
-    mode = callback_query.data
-    ota_input = pending_inputs.get(callback_query.from_user.id)
+    user_id = callback_query.from_user.id
+    ota_input = pending_inputs.get(user_id)
     if not ota_input:
         await callback_query.message.answer("Tidak ada input OTA tersimpan. Kirim ulang dengan /dump.")
         return
@@ -65,10 +69,20 @@ async def process_dump(callback_query: types.CallbackQuery):
     output_dir = "extracted"
     os.makedirs(output_dir, exist_ok=True)
 
-    if mode == "full":
+    if callback_query.data == "full":
+        await callback_query.message.answer("Ekstraksi full OTA dimulai...")
         cmd = ["./otaripper", ota_input, "-o", output_dir, "--print-hash", "--stats"]
+
+    elif callback_query.data.startswith("part|"):
+        part = callback_query.data.split("|", 1)[1]
+        await callback_query.message.answer(
+            f"Ekstraksi partisi {part} dimulai. "
+            "Catatan: beberapa partisi seperti boot bisa otomatis mengekstrak vendor_boot juga."
+        )
+        cmd = ["./otaripper", ota_input, "-o", output_dir, "-p", part, "--print-hash"]
+
     else:
-        cmd = ["./otaripper", ota_input, "-o", output_dir, "-p", "boot,vendor_boot", "--print-hash"]
+        return
 
     subprocess.run(cmd, check=True)
 
@@ -89,11 +103,10 @@ async def process_dump(callback_query: types.CallbackQuery):
 
     logging.info("Ekstraksi selesai, mengirim hasil ke user...")
     zip_file = FSInputFile("result_with_hash.zip")
-    await bot.send_document(callback_query.from_user.id, zip_file)
+    await bot.send_document(user_id, zip_file)
 
-    # Kirim juga file hashes.json terpisah
     json_file = FSInputFile("hashes.json")
-    await bot.send_document(callback_query.from_user.id, json_file)
+    await bot.send_document(user_id, json_file)
 
 async def main():
     logging.info("Bot is running...")
