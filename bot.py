@@ -75,7 +75,8 @@ async def process_dump(callback_query: types.CallbackQuery):
         subprocess.run(cmd, check=True)
     elif callback_query.data.startswith("part|"):
         part = callback_query.data.split("|", 1)[1]
-        selected_partitions[user_id].append(part)
+        if part not in selected_partitions[user_id]:
+            selected_partitions[user_id].append(part)
         await callback_query.answer(f"Partisi {part} ditambahkan ✅")
         return
     elif callback_query.data == "extract":
