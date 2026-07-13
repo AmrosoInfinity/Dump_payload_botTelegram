@@ -1,9 +1,4 @@
-import os
-import asyncio
-import subprocess
-import json
-import shutil
-import logging
+import os, asyncio, subprocess, json, shutil, logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -14,16 +9,16 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot = Bot(token=TOKEN, request_timeout=60)
 dp = Dispatcher()
 
-# Step 1: User kirim /dump
+# Simpan input OTA sementara per user
+pending_inputs = {}
+
 @dp.message(Command("dump"))
 async def cmd_dump(message: types.Message):
     await message.answer("Silakan kirim file OTA (.zip/payload.bin) atau URL OTA:")
 
-# Step 2: User kirim file atau URL OTA
 @dp.message()
 async def handle_ota(message: types.Message):
     ota_input = None
-
     if message.document:
         if not (message.document.file_name.endswith(".zip") or message.document.file_name.endswith(".bin")):
             await message.answer("File tidak valid. Kirim OTA .zip atau payload.bin.")
@@ -37,10 +32,12 @@ async def handle_ota(message: types.Message):
         if text.startswith("http://") or text.startswith("https://"):
             ota_input = text
         else:
-            # Abaikan input lain (misalnya /start)
             return
 
-    # Jalankan otaripper -l untuk list partisi
+    # Simpan input OTA untuk user ini
+    pending_inputs[message.from_user.id] = ota_input
+
+    # List partisi
     try:
         result = subprocess.check_output(["./otaripper", "-l", ota_input], text=True)
         partitions = [p.strip() for p in result.splitlines() if p.strip()]
@@ -49,25 +46,28 @@ async def handle_ota(message: types.Message):
         return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Dump Full", callback_data=f"full|{ota_input}")],
-        [InlineKeyboardButton(text="Dump Partition", callback_data=f"part|{ota_input}")]
+        [InlineKeyboardButton(text="Dump Full", callback_data="full")],
+        [InlineKeyboardButton(text="Dump Partition", callback_data="part")]
     ])
     await message.answer(
         "Input OTA diterima ✅\n\nDaftar partisi:\n" + "\n".join(partitions) + "\n\nPilih mode ekstraksi:",
         reply_markup=kb
     )
 
-# Step 3: User pilih tombol
 @dp.callback_query()
 async def process_dump(callback_query: types.CallbackQuery):
-    mode, ota_input = callback_query.data.split("|", 1)
+    mode = callback_query.data
+    ota_input = pending_inputs.get(callback_query.from_user.id)
+    if not ota_input:
+        await callback_query.message.answer("Tidak ada input OTA tersimpan. Kirim ulang dengan /dump.")
+        return
+
     output_dir = "extracted"
     os.makedirs(output_dir, exist_ok=True)
 
     if mode == "full":
         cmd = ["./otaripper", ota_input, "-o", output_dir, "--print-hash", "--stats"]
     else:
-        # Default contoh partisi, bisa diganti sesuai input user
         cmd = ["./otaripper", ota_input, "-o", output_dir, "-p", "boot,vendor_boot", "--print-hash"]
 
     subprocess.run(cmd, check=True)
