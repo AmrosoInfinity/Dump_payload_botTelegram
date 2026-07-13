@@ -1,4 +1,4 @@
-import os, asyncio, subprocess, json, shutil, logging
+import os, asyncio, subprocess, json, shutil, logging, re
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import Command
@@ -9,8 +9,8 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot = Bot(token=TOKEN, request_timeout=60)
 dp = Dispatcher()
 
-# Simpan input OTA sementara per user
 pending_inputs = {}
+selected_partitions = {}
 
 @dp.message(Command("dump"))
 async def cmd_dump(message: types.Message):
@@ -34,10 +34,10 @@ async def handle_ota(message: types.Message):
         else:
             return
 
-    # Simpan input OTA untuk user ini
-    pending_inputs[message.from_user.id] = ota_input
+    user_id = message.from_user.id
+    pending_inputs[user_id] = ota_input
+    selected_partitions[user_id] = []
 
-    # List partisi
     try:
         result = subprocess.check_output(["./otaripper", "-l", ota_input], text=True)
         partitions = [p.strip() for p in result.splitlines() if p.strip()]
@@ -56,8 +56,8 @@ async def handle_ota(message: types.Message):
 
 @dp.callback_query()
 async def process_dump(callback_query: types.CallbackQuery):
-    mode = callback_query.data
-    ota_input = pending_inputs.get(callback_query.from_user.id)
+    user_id = callback_query.from_user.id
+    ota_input = pending_inputs.get(user_id)
     if not ota_input:
         await callback_query.message.answer("Tidak ada input OTA tersimpan. Kirim ulang dengan /dump.")
         return
@@ -65,12 +65,50 @@ async def process_dump(callback_query: types.CallbackQuery):
     output_dir = "extracted"
     os.makedirs(output_dir, exist_ok=True)
 
-    if mode == "full":
+    if callback_query.data == "full":
         cmd = ["./otaripper", ota_input, "-o", output_dir, "--print-hash", "--stats"]
-    else:
-        cmd = ["./otaripper", ota_input, "-o", output_dir, "-p", "boot,vendor_boot", "--print-hash"]
+        subprocess.run(cmd, check=True)
 
-    subprocess.run(cmd, check=True)
+    elif callback_query.data == "part":
+        # tampilkan daftar partisi untuk dipilih
+        try:
+            result = subprocess.check_output(["./otaripper", "-l", ota_input], text=True)
+            partitions = [p.strip() for p in result.splitlines() if p.strip()]
+        except Exception as e:
+            await callback_query.message.answer(f"Gagal membaca OTA: {e}")
+            return
+
+        kb = InlineKeyboardMarkup()
+        for p in partitions:
+            safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', p)[:60]
+            kb.inline_keyboard.append([InlineKeyboardButton(text=p, callback_data=f"choose|{safe_name}")])
+        kb.inline_keyboard.append([InlineKeyboardButton(text="Ekstrak Sekarang", callback_data="extract")])
+
+        await callback_query.message.answer(
+            "Pilih partisi dengan klik tombol. Setiap klik akan menambahkan nama partisi ke daftar pilihan "
+            "(dipisahkan koma). Setelah selesai, tekan Ekstrak Sekarang.",
+            reply_markup=kb
+        )
+
+    elif callback_query.data.startswith("choose|"):
+        part = callback_query.data.split("|", 1)[1]
+        if part not in selected_partitions[user_id]:
+            selected_partitions[user_id].append(part)
+        current = ",".join(selected_partitions[user_id])
+        await callback_query.message.answer(f"Pilihan partisi saat ini: {current}")
+        await callback_query.answer(f"{part} ditambahkan ✅")
+        return
+
+    elif callback_query.data == "extract":
+        parts = ",".join(selected_partitions[user_id])
+        if not parts:
+            await callback_query.message.answer("Belum ada partisi dipilih. Klik partisi dulu.")
+            return
+        cmd = ["./otaripper", ota_input, "-o", output_dir, "-p", parts, "--print-hash"]
+        subprocess.run(cmd, check=True)
+
+    else:
+        return
 
     # Buat JSON hash
     hashes = {}
@@ -89,11 +127,10 @@ async def process_dump(callback_query: types.CallbackQuery):
 
     logging.info("Ekstraksi selesai, mengirim hasil ke user...")
     zip_file = FSInputFile("result_with_hash.zip")
-    await bot.send_document(callback_query.from_user.id, zip_file)
+    await bot.send_document(user_id, zip_file)
 
-    # Kirim juga file hashes.json terpisah
     json_file = FSInputFile("hashes.json")
-    await bot.send_document(callback_query.from_user.id, json_file)
+    await bot.send_document(user_id, json_file)
 
 async def main():
     logging.info("Bot is running...")
