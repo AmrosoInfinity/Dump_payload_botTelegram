@@ -47,11 +47,13 @@ async def handle_ota(message: types.Message):
         await message.answer(f"Gagal membaca OTA: {e}")
         return
 
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton(text="Dump Full", callback_data="full"))
+    # Buat keyboard dengan format list of lists
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Dump Full", callback_data="full")]
+    ])
     for p in partitions:
-        kb.add(InlineKeyboardButton(text=p, callback_data=f"part|{p}"))
-    kb.add(InlineKeyboardButton(text="Ekstrak Sekarang", callback_data="extract"))
+        kb.inline_keyboard.append([InlineKeyboardButton(text=p, callback_data=f"part|{p}")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="Ekstrak Sekarang", callback_data="extract")])
 
     await message.answer(
         "Input OTA diterima ✅\n\nKlik partisi untuk memilih (bisa lebih dari satu), "
