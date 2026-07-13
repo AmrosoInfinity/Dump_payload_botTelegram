@@ -55,7 +55,8 @@ async def handle_ota(message: types.Message):
         [InlineKeyboardButton(text="Dump Full", callback_data="full")]
     ])
     for p in partitions:
-        safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', p)
+        # Sanitasi nama partisi agar aman untuk callback_data
+        safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', p)[:60]  # potong max 60 byte
         partition_maps[user_id][safe_name] = p
         kb.inline_keyboard.append([InlineKeyboardButton(text=p, callback_data=f"part|{safe_name}")])
     kb.inline_keyboard.append([InlineKeyboardButton(text="Ekstrak Sekarang", callback_data="extract")])
