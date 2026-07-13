@@ -66,15 +66,8 @@ async def process_dump(callback_query: types.CallbackQuery):
     os.makedirs(output_dir, exist_ok=True)
 
     if mode == "full":
-        await callback_query.message.answer(
-            "Ekstraksi full OTA dimulai. Mohon tunggu hingga selesai..."
-        )
         cmd = ["./otaripper", ota_input, "-o", output_dir, "--print-hash", "--stats"]
     else:
-        await callback_query.message.answer(
-            f"Ekstraksi partisi boot,vendor_boot dimulai. "
-            "Catatan: beberapa partisi seperti boot bisa otomatis mengekstrak vendor_boot juga."
-        )
         cmd = ["./otaripper", ota_input, "-o", output_dir, "-p", "boot,vendor_boot", "--print-hash"]
 
     subprocess.run(cmd, check=True)
