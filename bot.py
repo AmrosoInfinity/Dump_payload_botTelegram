@@ -1,116 +1,145 @@
-import os, asyncio, subprocess, json, shutil, logging, re
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from aiogram.filters import Command
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import subprocess
+import os
+import shutil
+import json
+import zipfile
+import uuid
+import re
 
-logging.basicConfig(level=logging.INFO)
+# Ambil token dari environment variables GitHub Actions
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+bot = telebot.TeleBot(BOT_TOKEN)
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-bot = Bot(token=TOKEN, request_timeout=60)
-dp = Dispatcher()
+# Dictionary untuk menyimpan state user (URL Ota, dll)
+user_data = {}
 
-# Simpan input OTA sementara per user
-pending_inputs = {}
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    bot.reply_to(message, "Halo! Saya adalah Bot OTA Ripper.\nGunakan perintah /dump untuk memulai ekstraksi OTA.")
 
-@dp.message(Command("dump"))
-async def cmd_dump(message: types.Message):
-    await message.answer("Silakan kirim file OTA (.zip/payload.bin) atau URL OTA:")
+@bot.message_handler(commands=['dump'])
+def dump_command(message):
+    msg = bot.reply_to(message, "Silakan kirimkan URL dari file OTA (.zip atau payload.bin):")
+    bot.register_next_step_handler(msg, process_ota_url)
 
-@dp.message()
-async def handle_ota(message: types.Message):
-    ota_input = None
-    if message.document:
-        if not (message.document.file_name.endswith(".zip") or message.document.file_name.endswith(".bin")):
-            await message.answer("File tidak valid. Kirim OTA .zip atau payload.bin.")
-            return
-        file_path = f"downloads/{message.document.file_name}"
-        os.makedirs("downloads", exist_ok=True)
-        await message.document.download(destination_file=file_path)
-        ota_input = file_path
-    else:
-        text = message.text.strip()
-        if text.startswith("http://") or text.startswith("https://"):
-            ota_input = text
-        else:
-            return
+def process_ota_url(message):
+    url = message.text.strip()
+    if not url.startswith("http"):
+        bot.reply_to(message, "Harap masukkan URL yang valid (dimulai dengan http/https). Ketik /dump untuk mengulang.")
+        return
 
-    # Simpan input OTA untuk user ini
-    user_id = message.from_user.id
-    pending_inputs[user_id] = ota_input
-
-    # List partisi
+    chat_id = message.chat.id
+    user_data[chat_id] = {'url': url}
+    
+    bot.send_message(chat_id, "⏳ Mengambil daftar partisi dari URL...")
+    
+    # Jalankan otaripper untuk melist partisi
     try:
-        result = subprocess.check_output(["./otaripper", "-l", ota_input], text=True)
-        partitions = [p.strip() for p in result.splitlines() if p.strip()]
+        result = subprocess.run(["./otaripper", "-l", url], capture_output=True, text=True, timeout=60)
+        output = result.stdout + result.stderr
+        
+        if result.returncode != 0:
+            bot.send_message(chat_id, f"❌ Gagal mengambil partisi:\n```\n{output[:1000]}\n```", parse_mode="Markdown")
+            return
+        
+        # Buat Inline Keyboard
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("Dump Full", callback_data="dump_full"),
+                   InlineKeyboardButton("Dump Partition", callback_data="dump_part"))
+        
+        bot.send_message(chat_id, f"✅ Partisi berhasil dibaca!\n\nPilih metode ekstraksi:", reply_markup=markup)
+
     except Exception as e:
-        await message.answer(f"Gagal membaca OTA: {e}")
+        bot.send_message(chat_id, f"❌ Terjadi kesalahan: {str(e)}")
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_query(call):
+    chat_id = call.message.chat.id
+    if chat_id not in user_data:
+        bot.answer_callback_query(call.id, "Sesi kedaluwarsa. Ketik /dump lagi.")
         return
 
-    # Buat tombol: Dump Full + semua partisi
-    buttons = [[InlineKeyboardButton(text="Dump Full", callback_data="full")]]
-    for p in partitions:
-        safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', p)[:60]
-        buttons.append([InlineKeyboardButton(text=p, callback_data=f"part|{safe_name}")])
+    if call.data == "dump_full":
+        bot.answer_callback_query(call.id, "Memulai Dump Full...")
+        execute_dump(chat_id, user_data[chat_id]['url'], None)
+    
+    elif call.data == "dump_part":
+        msg = bot.send_message(chat_id, "Kirimkan nama partisi yang ingin di-dump (pisahkan dengan koma, contoh: boot,init_boot,vendor_boot):")
+        bot.register_next_step_handler(msg, process_specific_partitions)
 
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.answer(
-        "Input OTA diterima ✅\n\nPilih partisi yang ingin diekstrak atau Dump Full:",
-        reply_markup=kb
-    )
-
-@dp.callback_query()
-async def process_dump(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    ota_input = pending_inputs.get(user_id)
-    if not ota_input:
-        await callback_query.message.answer("Tidak ada input OTA tersimpan. Kirim ulang dengan /dump.")
+def process_specific_partitions(message):
+    chat_id = message.chat.id
+    partitions = message.text.strip()
+    
+    if chat_id not in user_data:
+        bot.reply_to(message, "Sesi kedaluwarsa. Ketik /dump lagi.")
         return
+        
+    bot.reply_to(message, f"Memulai Dump untuk partisi: {partitions}...")
+    execute_dump(chat_id, user_data[chat_id]['url'], partitions)
 
-    output_dir = "extracted"
-    os.makedirs(output_dir, exist_ok=True)
-
-    if callback_query.data == "full":
-        await callback_query.message.answer("Ekstraksi full OTA dimulai...")
-        cmd = ["./otaripper", ota_input, "-o", output_dir, "--print-hash", "--stats"]
-
-    elif callback_query.data.startswith("part|"):
-        part = callback_query.data.split("|", 1)[1]
-        await callback_query.message.answer(
-            f"Ekstraksi partisi {part} dimulai. "
-            "Catatan: beberapa partisi seperti boot bisa otomatis mengekstrak vendor_boot juga."
-        )
-        cmd = ["./otaripper", ota_input, "-o", output_dir, "-p", part, "--print-hash"]
-
-    else:
-        return
-
-    subprocess.run(cmd, check=True)
-
-    # Buat JSON hash
-    hashes = {}
-    for root, _, files in os.walk(output_dir):
-        for f in files:
-            if f.endswith(".img"):
-                path = os.path.join(root, f)
-                h = subprocess.check_output(["sha256sum", path]).decode().split()[0]
-                hashes[f] = h
-
-    with open("hashes.json", "w") as jf:
-        json.dump(hashes, jf, indent=2)
-
-    shutil.make_archive("result", "zip", output_dir)
-    shutil.move("result.zip", "result_with_hash.zip")
-
-    logging.info("Ekstraksi selesai, mengirim hasil ke user...")
-    zip_file = FSInputFile("result_with_hash.zip")
-    await bot.send_document(user_id, zip_file)
-
-    json_file = FSInputFile("hashes.json")
-    await bot.send_document(user_id, json_file)
-
-async def main():
-    logging.info("Bot is running...")
-    await dp.start_polling(bot)
+def execute_dump(chat_id, url, partitions):
+    bot.send_message(chat_id, "⚙️ Sedang mengekstrak. Ini mungkin membutuhkan waktu...")
+    
+    job_id = str(uuid.uuid4())[:8]
+    out_dir = f"extracted_{job_id}"
+    
+    cmd = ["./otaripper", url, "-o", out_dir, "-n", "--print-hash"]
+    if partitions:
+        cmd.extend(["-p", partitions])
+        
+    try:
+        # Jalankan otaripper
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            bot.send_message(chat_id, f"❌ Gagal mengekstrak:\n```\n{result.stderr[:1000]}\n```", parse_mode="Markdown")
+            return
+        
+        # Ekstrak hash dari output stdout otaripper (Mencari pola hash SHA-256)
+        hashes = {}
+        # Asumsi regex sederhana untuk mencari nama partisi dan hash-nya pada log CLI
+        hash_pattern = re.findall(r'([a-zA-Z0-9_]+)\.(?:img|bin).*?([a-fA-F0-9]{64})', result.stdout)
+        for part, sha in hash_pattern:
+            hashes[part] = sha
+            
+        # Tulis ke hashes.json
+        json_path = os.path.join(out_dir, "hashes.json")
+        with open(json_path, "w") as f:
+            json.dump(hashes, f, indent=4)
+            
+        # Zip folder output
+        zip_filename = f"OTA_Dump_{job_id}.zip"
+        with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk(out_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    zipf.write(file_path, os.path.basename(file_path))
+                    
+        # Kirim file zip
+        file_size_mb = os.path.getsize(zip_filename) / (1024 * 1024)
+        if file_size_mb > 50:
+            bot.send_message(chat_id, f"⚠️ Ukuran file ({file_size_mb:.2f} MB) melebihi batas upload Telegram (50 MB). Pengiriman dibatalkan.")
+        else:
+            bot.send_message(chat_id, "✅ Ekstraksi selesai! Mengunggah file...")
+            with open(zip_filename, 'rb') as f:
+                bot.send_document(chat_id, f)
+                
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Terjadi kesalahan saat sistem berjalan: {str(e)}")
+    
+    finally:
+        # Cleanup
+        if os.path.exists(out_dir):
+            shutil.rmtree(out_dir)
+        if os.path.exists(zip_filename):
+            os.remove(zip_filename)
+        # Hapus data sesi agar bersih
+        if chat_id in user_data:
+            del user_data[chat_id]
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    print("Bot is running...")
+    bot.infinity_polling()
