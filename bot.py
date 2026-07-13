@@ -13,7 +13,7 @@ def run_cmd(cmd):
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     return result.stdout, result.stderr
 
-@async
+# PERBAIKAN: @async dihapus karena tidak valid di Python
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Halo! Kirimkan URL link OTA (.zip / payload.bin) untuk memulai proses dump.")
 
@@ -68,11 +68,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("⚡ Memulai ekstraksi OTA... Proses ini memakan waktu tergantung ukuran file.")
 
     # Tentukan argumen perintah otaripper
-    # Menggunakan --print-hash untuk mendapatkan SHA-256 tiap partisi
     if choice == "dump_full":
         cmd = f"./otaripper {url} -o {output_dir} --print-hash -n"
     else:
-        # Contoh custom partisi krusial, silakan sesuaikan list-nya
         cmd = f"./otaripper {url} -p boot,init_boot,vendor_boot,system -o {output_dir} --print-hash -n"
 
     stdout, stderr = run_cmd(cmd)
@@ -80,9 +78,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Parsing output otaripper untuk mencari Hash SHA-256
     hash_data = {}
     for line in stdout.splitlines():
-        # Asumsi format output otaripper mengandung nama partisi dan hash-nya
         if "sha256" in line.lower() or ":" in line:
-            # Contoh parsing sederhana (sesuaikan dengan output asli otaripper)
             parts = line.split()
             if len(parts) >= 2:
                 hash_data[parts[0]] = parts[-1]
@@ -103,7 +99,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 zipf.write(file_path, os.path.relpath(file_path, output_dir))
 
     # Kirim berkas ke pengguna Telegram
-    await query.edit_message_text("📤 Mengirimkan berkas berkas dump ZIP ke Anda...")
+    await query.edit_message_text("📤 Mengirimkan berkas dump ZIP ke Anda...")
     with open(zip_filename, 'rb') as document:
         await query.message.reply_document(document=document, filename=zip_filename, caption="✅ Dump Sukses menggunakan Otaripper!")
 
