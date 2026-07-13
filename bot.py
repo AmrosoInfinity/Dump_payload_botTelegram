@@ -1,6 +1,6 @@
 import os, asyncio, subprocess, json, shutil, logging
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import Command
 
 logging.basicConfig(level=logging.INFO)
@@ -87,7 +87,13 @@ async def process_dump(callback_query: types.CallbackQuery):
     shutil.make_archive("result", "zip", output_dir)
     shutil.move("result.zip", "result_with_hash.zip")
 
-    await bot.send_document(callback_query.from_user.id, open("result_with_hash.zip", "rb"))
+    logging.info("Ekstraksi selesai, mengirim hasil ke user...")
+    zip_file = FSInputFile("result_with_hash.zip")
+    await bot.send_document(callback_query.from_user.id, zip_file)
+
+    # Kirim juga file hashes.json terpisah
+    json_file = FSInputFile("hashes.json")
+    await bot.send_document(callback_query.from_user.id, json_file)
 
 async def main():
     logging.info("Bot is running...")
