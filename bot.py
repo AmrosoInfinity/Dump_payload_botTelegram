@@ -78,7 +78,7 @@ async def process_dump(callback_query: types.CallbackQuery):
             await callback_query.message.answer(f"Gagal membaca OTA: {e}")
             return
 
-        kb = InlineKeyboardMarkup()
+        kb = InlineKeyboardMarkup(inline_keyboard=[])
         for p in partitions:
             safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', p)[:60]
             kb.inline_keyboard.append([InlineKeyboardButton(text=p, callback_data=f"choose|{safe_name}")])
