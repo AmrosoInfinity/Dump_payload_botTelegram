@@ -1,0 +1,39 @@
+name: OTA Ripper Telegram Bot
+
+on:
+  workflow_dispatch: # Dapat dipicu manual dari tab Actions GitHub
+
+jobs:
+  run-bot:
+    # Catatan: Jika menggunakan binary arm64 dari link Anda, pastikan runner Anda adalah ARM64. 
+    # Jika menggunakan runner standard GitHub (ubuntu-latest yang berbasis x86_64), gunakan binary x86_64 otaripper.
+    runs-on: ubuntu-latest 
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install python-telegram-bot
+
+    - name: Download and Setup Otaripper
+      run: |
+        # Mengunduh binary otaripper sesuai tautan yang Anda berikan
+        # Pengingat: Jika runner Anda x86_64, ganti link di bawah ke versi linux-amd64.tar.gz agar tidak Exec Format Error
+        wget https://github.com/syedinsaf/otaripper/releases/download/v3.3.0/otaripper-3.3.0-linux-x86_64.tar.gz
+        tar -xvf otaripper-3.3.0-linux-x86_64.tar.gz
+        chmod +x otaripper
+        ./otaripper -V # Tes apakah binary berjalan dengan benar
+
+    - name: Start Telegram Bot
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      run: |
+        python bot.py
