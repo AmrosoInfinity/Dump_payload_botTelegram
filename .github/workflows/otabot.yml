@@ -5,7 +5,6 @@ on:
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
-# TAMBAHKAN BLOK PERMISSIONS INI
 permissions:
   actions: write
   contents: read
@@ -39,9 +38,11 @@ jobs:
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       run: |
-        timeout 19800 python bot.py || echo "Sesi bot selesai secara aman."
+        # Menggunakan python -u agar log langsung muncul di GitHub Actions detik itu juga
+        python -u bot.py
 
     - name: Trigger Next Session (Looping)
+      if: always() # Tetap jalankan sesi berikutnya meskipun sesi ini selesai atau di-stop
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
