@@ -8,20 +8,18 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-bot = Bot(token=TOKEN, request_timeout=60)  # timeout lebih panjang
+bot = Bot(token=TOKEN, request_timeout=60)
 dp = Dispatcher()
 
-# Handler untuk command /dump
+# Step 1: User kirim /dump
 @dp.message(Command("dump"))
 async def cmd_dump(message: types.Message):
-    logging.info(f"Received /dump from {message.from_user.id}")
-    await message.answer("Kirim file OTA (.zip/payload.bin) atau URL OTA:")
+    await message.answer("Silakan kirim file OTA (.zip/payload.bin) atau URL OTA:")
 
-# Handler untuk semua pesan (file atau teks)
+# Step 2: User kirim file atau URL
 @dp.message()
 async def handle_ota(message: types.Message):
     ota_input = None
@@ -30,34 +28,43 @@ async def handle_ota(message: types.Message):
         os.makedirs("downloads", exist_ok=True)
         await message.document.download(destination_file=file_path)
         ota_input = file_path
-        logging.info(f"File OTA diterima: {file_path}")
     else:
         ota_input = message.text.strip()
-        logging.info(f"URL OTA diterima: {ota_input}")
 
+    # Jalankan otaripper -l untuk list partisi
+    try:
+        result = subprocess.check_output(["./otaripper", "-l", ota_input], text=True)
+        partitions = [p.strip() for p in result.splitlines() if p.strip()]
+    except Exception as e:
+        await message.answer(f"Gagal membaca OTA: {e}")
+        return
+
+    # Buat tombol pilihan
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Dump Full", callback_data=f"full|{ota_input}")],
         [InlineKeyboardButton(text="Dump Partition", callback_data=f"part|{ota_input}")]
     ])
-    await message.answer("Pilih mode ekstraksi:", reply_markup=kb)
+    await message.answer(
+        "Input OTA diterima ✅\n\nDaftar partisi:\n" + "\n".join(partitions) + "\n\nPilih mode ekstraksi:",
+        reply_markup=kb
+    )
 
-# Handler untuk tombol inline
+# Step 3: User pilih tombol
 @dp.callback_query()
 async def process_dump(callback_query: types.CallbackQuery):
     mode, ota_input = callback_query.data.split("|", 1)
     output_dir = "extracted"
     os.makedirs(output_dir, exist_ok=True)
 
-    logging.info(f"Mulai ekstraksi mode={mode}, input={ota_input}")
-
     if mode == "full":
         cmd = ["./otaripper", ota_input, "-o", output_dir, "--print-hash", "--stats"]
     else:
+        # Default contoh partisi, bisa diganti sesuai input user
         cmd = ["./otaripper", ota_input, "-o", output_dir, "-p", "boot,vendor_boot", "--print-hash"]
 
     subprocess.run(cmd, check=True)
 
-    # kumpulkan hash ke JSON
+    # Buat JSON hash
     hashes = {}
     for root, _, files in os.walk(output_dir):
         for f in files:
@@ -72,11 +79,9 @@ async def process_dump(callback_query: types.CallbackQuery):
     shutil.make_archive("result", "zip", output_dir)
     shutil.move("result.zip", "result_with_hash.zip")
 
-    logging.info("Ekstraksi selesai, mengirim hasil ke user...")
     await bot.send_document(callback_query.from_user.id, open("result_with_hash.zip", "rb"))
 
 async def main():
-    logging.info("Bot is running, connecting to Telegram...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
