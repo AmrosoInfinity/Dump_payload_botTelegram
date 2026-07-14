@@ -148,17 +148,16 @@ def execute_dump(chat_id, url, partitions):
                     file_path = os.path.join(root, file)
                     zipf.write(file_path, os.path.basename(file_path))
                     
-        # Cek ukuran file dan kirim
+        # Hitung ukuran dan langsung kirim tanpa batasan limit
         file_size_mb = os.path.getsize(zip_filename) / (1024 * 1024)
-        if file_size_mb > 50:
-            bot.send_message(chat_id, f"⚠️ Ekstraksi berhasil, **NAMUN** ukuran file zip ({file_size_mb:.2f} MB) melebihi batas maksimal unggah Telegram (50 MB).\n\nSilakan coba lagi menggunakan 'Dump Partition' untuk mengekstrak partisi satu per satu agar ukurannya lebih kecil.", parse_mode="Markdown")
-        else:
-            bot.send_message(chat_id, "✅ Kompresi selesai! Mengirim file zip ke Anda...")
-            with open(zip_filename, 'rb') as f:
-                bot.send_document(chat_id, f)
+        bot.send_message(chat_id, f"✅ Kompresi selesai! (Ukuran: {file_size_mb:.2f} MB)\nMengirim file zip ke Anda...")
+        
+        with open(zip_filename, 'rb') as f:
+            bot.send_document(chat_id, f)
                 
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Terjadi kesalahan sistem: {str(e)}")
+        # Menangkap error jika Telegram menolak file yang terlalu besar (misal HTTP 413)
+        bot.send_message(chat_id, f"❌ Terjadi kesalahan saat pengiriman: {str(e)}")
     
     finally:
         # Bersihkan folder dan file sampah agar runner GitHub tidak penuh
