@@ -10,6 +10,10 @@ concurrency:
   group: bot-runner
   cancel-in-progress: true # Membatalkan instance bot sebelumnya jika cron baru berjalan
 
+# [DITAMBAHKAN] Memberikan izin (write) agar GH CLI bisa membuat rilis
+permissions:
+  contents: write
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -38,5 +42,7 @@ jobs:
       - name: Run Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          # [DITAMBAHKAN] Token otomatis GitHub Actions agar GH CLI mendapatkan akses
+          GH_TOKEN: ${{ github.token }}
         run: |
           python bot.py
