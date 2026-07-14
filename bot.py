@@ -7,6 +7,7 @@ import json
 import zipfile
 import uuid
 import re
+from datetime import datetime
 
 # Ambil token dari environment variables GitHub Actions
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -52,6 +53,13 @@ def process_ota_url(message):
         # Simpan output daftar partisi (bersihkan dari ansi color codes)
         clean_list_output = clean_ansi(result.stdout)
         user_data[chat_id]['partitions_list'] = clean_list_output
+        
+        # --- MENGEKSTRAK PRODUCT MODEL MENGGUNAKAN REGEX ---
+        match = re.search(r'Product Model\s*:\s*([^\n\r]+)', clean_list_output)
+        if match:
+            user_data[chat_id]['product_model'] = match.group(1).strip()
+        else:
+            user_data[chat_id]['product_model'] = "Unknown"
 
         # Buat Inline Keyboard
         markup = InlineKeyboardMarkup()
@@ -104,7 +112,11 @@ def process_specific_partitions(message):
 def execute_dump(chat_id, url, partitions):
     bot.send_message(chat_id, "⚙️ Sedang mengekstrak. Silakan tunggu, ini membutuhkan waktu tergantung ukuran file dan kecepatan server...")
     
+    # Generate ID, Waktu, dan Model untuk nama file
     job_id = str(uuid.uuid4())[:8]
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    product_model = user_data[chat_id].get('product_model', 'Unknown')
+    
     out_dir = f"extracted_{job_id}"
     
     cmd = ["./otaripper", url, "-o", out_dir, "-n", "--print-hash"]
@@ -139,28 +151,49 @@ def execute_dump(chat_id, url, partitions):
             bot.send_message(chat_id, "❌ Ekstraksi selesai, tapi folder kosong. Partisi mungkin salah ketik atau tidak ada.")
             return
 
-        # Zip folder output
-        zip_filename = f"OTA_Dump_{job_id}.zip"
-        bot.send_message(chat_id, "📦 Mengompresi file hasil ekstraksi...")
+        # Pembuatan Nama Zip Sesuai Format: OTA_Dump_"product model"_hash_waktu.zip
+        # Spasi dan karakter ilegal diganti agar aman untuk URL/CLI
+        safe_model = product_model.replace(" ", "_").replace("/", "_")
+        zip_filename = f"OTA_Dump_{safe_model}_{job_id}_{timestamp}.zip"
+        
+        bot.send_message(chat_id, f"📦 Mengompresi file ke `{zip_filename}`...", parse_mode="Markdown")
         with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for root, dirs, files in os.walk(out_dir):
                 for file in files:
                     file_path = os.path.join(root, file)
                     zipf.write(file_path, os.path.basename(file_path))
                     
-        # Hitung ukuran dan langsung kirim tanpa batasan limit
+        # Cek ukuran file
         file_size_mb = os.path.getsize(zip_filename) / (1024 * 1024)
-        bot.send_message(chat_id, f"✅ Kompresi selesai! (Ukuran: {file_size_mb:.2f} MB)\nMengirim file zip ke Anda...")
         
-        with open(zip_filename, 'rb') as f:
-            bot.send_document(chat_id, f)
+        if file_size_mb > 50:
+            bot.send_message(chat_id, f"⚠️ Ukuran file ({file_size_mb:.2f} MB) melebihi batas Telegram (50 MB).\n\n🚀 Menyediakan tautan unduhan langsung ke repositori Anda, mohon tunggu...")
+            
+            repo = os.environ.get("GITHUB_REPOSITORY")
+            
+            # Buat base release secara paksa/diam-diam (akan error terabaikan jika release 'OTA-Dumps' sudah eksis)
+            subprocess.run(["gh", "release", "create", "OTA-Dumps", "--title", "OTA Dumps Storage", "--notes", "Tempat penyimpanan otomatis hasil extract file bot Telegram."], capture_output=True)
+            
+            # Unggah file ke release "OTA-Dumps" tersebut
+            upload_cmd = ["gh", "release", "upload", "OTA-Dumps", zip_filename, "--clobber"]
+            upload_result = subprocess.run(upload_cmd, capture_output=True, text=True)
+            
+            if upload_result.returncode == 0:
+                # Membuat direct download link langsung ke Asset di dalam tag OTA-Dumps
+                download_link = f"https://github.com/{repo}/releases/download/OTA-Dumps/{zip_filename}"
+                bot.send_message(chat_id, f"✅ **Berhasil! File terlalu besar dan telah dialihkan.**\n\n🔗 **Link Download Langsung:**\n[⬇️ Klik di sini untuk mengunduh]({download_link})", parse_mode="Markdown", disable_web_page_preview=True)
+            else:
+                bot.send_message(chat_id, f"❌ Gagal menghasilkan tautan unduhan GitHub.\n```\n{upload_result.stderr[:500]}\n```", parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, f"✅ Kompresi selesai! (Ukuran: {file_size_mb:.2f} MB)\nMengirim file zip ke Anda...")
+            with open(zip_filename, 'rb') as f:
+                bot.send_document(chat_id, f)
                 
     except Exception as e:
-        # Menangkap error jika Telegram menolak file yang terlalu besar (misal HTTP 413)
-        bot.send_message(chat_id, f"❌ Terjadi kesalahan saat pengiriman: {str(e)}")
+        bot.send_message(chat_id, f"❌ Terjadi kesalahan sistem: {str(e)}")
     
     finally:
-        # Bersihkan folder dan file sampah agar runner GitHub tidak penuh
+        # Bersihkan folder dan file sampah
         if os.path.exists(out_dir):
             shutil.rmtree(out_dir)
         if 'zip_filename' in locals() and os.path.exists(zip_filename):
