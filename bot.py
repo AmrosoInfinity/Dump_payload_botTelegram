@@ -179,8 +179,10 @@ def execute_dump(chat_id, url, partitions):
             upload_result = subprocess.run(upload_cmd, capture_output=True, text=True)
             
             if upload_result.returncode == 0:
-                # Membuat direct download link langsung ke Asset di dalam tag OTA-Dumps
-                download_link = f"https://github.com/{repo}/releases/download/OTA-Dumps/{zip_filename}"
+                # Menggunakan URL Cloudflare Worker yang telah dibuat
+                cf_worker_url = "https://dumpperpayloadota.ahmadjulio01234.workers.dev"
+                download_link = f"{cf_worker_url}/?repo={repo}&file={zip_filename}"
+                
                 bot.send_message(chat_id, f"✅ **Berhasil! File terlalu besar dan telah dialihkan.**\n\n🔗 **Link Download Langsung:**\n[⬇️ Klik di sini untuk mengunduh]({download_link})", parse_mode="Markdown", disable_web_page_preview=True)
             else:
                 bot.send_message(chat_id, f"❌ Gagal menghasilkan tautan unduhan GitHub.\n```\n{upload_result.stderr[:500]}\n```", parse_mode="Markdown")
