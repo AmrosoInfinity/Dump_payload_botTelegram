@@ -9,8 +9,8 @@ import uuid
 import re
 
 # Ambil token dari environment variables GitHub Actions
-BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+bot = telebot.TeleBot(BOT_TOKEN)
 
 # Dictionary untuk menyimpan state user (URL Ota, dll)
 user_data = {}
