@@ -37,6 +37,6 @@ jobs:
 
       - name: Run Bot
         env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          BOT_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         run: |
           python bot.py
