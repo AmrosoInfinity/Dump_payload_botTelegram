@@ -1,23 +1,27 @@
-name: Telegram OTA Ripper Bot
+name: Telegram OTA Ripper (Web App Backend)
 
+# Menerima pemicu API dari Cloudflare Web App
 on:
-  schedule:
-    # Menjalankan workflow setiap 5 jam untuk mereset batasan 6-jam dari GitHub Action.
-    - cron: '0 */5 * * *'
-  workflow_dispatch: # Mengizinkan untuk dijalankan manual
+  workflow_dispatch:
+    inputs:
+      chat_id:
+        description: 'Telegram Chat ID'
+        required: true
+      url:
+        description: 'OTA URL'
+        required: true
+      partitions:
+        description: 'Partisi yang di-dump (kosongkan jika full)'
+        required: false
+        default: ''
 
-concurrency:
-  group: bot-runner
-  cancel-in-progress: true # Membatalkan instance bot sebelumnya jika cron baru berjalan
-
-# [DITAMBAHKAN] Memberikan izin (write) agar GH CLI bisa membuat rilis
 permissions:
   contents: write
 
 jobs:
-  run-bot:
+  extract-ota:
     runs-on: ubuntu-latest
-    timeout-minutes: 355 # Menghentikan bot tepat sebelum batas maksimal 360 menit GitHub
+    timeout-minutes: 355
 
     steps:
       - name: Checkout Repository
@@ -34,15 +38,22 @@ jobs:
 
       - name: Download & Setup otaripper
         run: |
-          # Mengunduh versi Linux agar bisa berjalan di container Ubuntu GitHub Actions
+          # Mengunduh versi Linux otaripper
           wget https://github.com/syedinsaf/otaripper/releases/download/v3.3.0/otaripper-3.3.0-linux-x86_64.tar.gz
           tar -xvf otaripper-3.3.0-linux-x86_64.tar.gz
           chmod +x otaripper
 
-      - name: Run Bot
+      - name: Run Extraction Task
         env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          # [DITAMBAHKAN] Token otomatis GitHub Actions agar GH CLI mendapatkan akses
-          GH_TOKEN: ${{ github.token }}
+          # Secret Kredensial Userbot
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          SESSION_STRING: ${{ secrets.SESSION_STRING }}
+          
+          # Input parameter dari Web App Cloudflare
+          CHAT_ID: ${{ github.event.inputs.chat_id }}
+          OTA_URL: ${{ github.event.inputs.url }}
+          PARTITIONS: ${{ github.event.inputs.partitions }}
         run: |
-          python bot.py
+          # Menjalankan skrip Userbot Modular
+          python backend/main.py
