@@ -1,0 +1,8 @@
+/* Pastikan tag style sebelumnya dari jawaban di atas dicopy ke sini */
+.hint-text {
+    color: #64748b; 
+    font-size: 0.75rem; 
+    display: block; 
+    margin-top: 4px;
+}
+.hidden { display: none !important; }
